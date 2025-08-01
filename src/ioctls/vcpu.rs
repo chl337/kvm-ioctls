@@ -9,6 +9,7 @@ use kvm_bindings::*;
 use libc::EINVAL;
 use std::fs::File;
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::u32;
 
 use ioctls::{KvmRunWrapper, Result};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -93,6 +94,21 @@ pub enum VcpuExit<'a> {
     IoapicEoi(u8 /* vector */),
     /// Corresponds to KVM_EXIT_HYPERV.
     Hyperv,
+    /// Corresponds to KVM_EXIT_MEMORY_FAULT
+    MemoryFault(u64, u64, u64)
+}
+
+impl PartialEq for VcpuExit<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Only care if of the same type
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+
+    fn ne(&self, other: &Self) -> bool {
+        !self.eq(other)
+    }
 }
 
 /// Wrapper over KVM vCPU ioctls.
@@ -1377,9 +1393,12 @@ impl VcpuFd {
                     // Safe because the exit_reason (which comes from the kernel) told us which
                     // union field to use.
                     let system_event = unsafe { &mut run.__bindgen_anon_1.system_event };
+                    let flags = unsafe {
+                        system_event.__bindgen_anon_1.flags
+                    };
                     Ok(VcpuExit::SystemEvent(
                         system_event.type_,
-                        system_event.flags,
+                        flags,
                     ))
                 }
                 KVM_EXIT_S390_STSI => Ok(VcpuExit::S390Stsi),
@@ -1390,6 +1409,14 @@ impl VcpuFd {
                     Ok(VcpuExit::IoapicEoi(eoi.vector))
                 }
                 KVM_EXIT_HYPERV => Ok(VcpuExit::Hyperv),
+                KVM_EXIT_MEMORY_FAULT => {
+                    let mf = unsafe { &mut run.__bindgen_anon_1.memory_fault };
+                    Ok(VcpuExit::MemoryFault (
+                        mf.flags,
+                        mf.gpa,
+                        mf.size,
+                    ))
+                },
                 r => panic!("unknown kvm exit reason: {}", r),
             }
         } else {
